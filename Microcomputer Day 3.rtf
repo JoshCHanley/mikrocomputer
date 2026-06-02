@@ -1,0 +1,135 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2818
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 #define TOTAL_STEPS 2052\
+#define ROWS 342\
+\
+volatile uint32_t current_slice = 0;\
+volatile uint8_t pov_buffer[6][ROWS][3];\
+const int row_offsets[6] = \{0, 0, -26, -26, -52, -52\};\
+\
+void Init_POV_Buffer(void) \{\
+    for(int s = 0; s < 6; s++) \{\
+        for(int r = 0; r < ROWS; r++) \{\
+            pov_buffer[s][r][0] = 0xC0;\
+            pov_buffer[s][r][1] = 0xC0;\
+            pov_buffer[s][r][2] = 0xC0;\
+        \}\
+    \}\
+\}\
+\
+void Set_Pixel(int column, int row, char color) \{\
+    if (column < 0 || column >= 36 || row < 0 || row >= ROWS) return;\
+    \
+    int module_index = column / 12;\
+    int led_bit = (column % 12) / 2;\
+    int is_odd = column % 2;\
+    \
+    if (color == 'R' || color == 'W' || color == 'Y') \{\
+        pov_buffer[0 + is_odd][row][module_index] |= (1 << led_bit);\
+    \}\
+    \
+    if (color == 'G' || color == 'W' || color == 'Y') \{\
+        pov_buffer[2 + is_odd][row][module_index] |= (1 << led_bit);\
+    \}\
+    \
+    if (color == 'B' || color == 'W') \{\
+        pov_buffer[4 + is_odd][row][module_index] |= (1 << led_bit);\
+    \}\
+\}\
+\
+void EXTI0_IRQHandler(void)\{\
+    if(LL_EXTI_IsActiveFlag_0_31(LL_EXTI_LINE_0))\{\
+        LL_EXTI_ClearFlag_0_31(LL_EXTI_LINE_0);\
+        \
+        uint32_t period_ticks = LL_TIM_GetCounter(TIM3);\
+        LL_TIM_SetCounter(TIM3, 0);\
+        \
+        motor_period_us = period_ticks;\
+        \
+        if (motor_period_us > 0)\{\
+            motor_rpm = 60000000 / motor_period_us;\
+            \
+            uint32_t new_arr = motor_period_us / TOTAL_STEPS;\
+            if(new_arr == 0) new_arr = 1; \
+            \
+            LL_TIM_SetAutoReload(TIM2, new_arr - 1);\
+        \}\
+        \
+        current_slice = 0; \
+    \}\
+\}\
+\
+void TIM2_IRQHandler(void) \{\
+    if(LL_TIM_IsActiveFlag_UPDATE(TIM2))\{\
+        LL_TIM_ClearFlag_UPDATE(TIM2);\
+        \
+        if (motor_period_us > 0 && !spi_busy) \{\
+            \
+            uint8_t sub_step = current_slice % 6;\
+            int physical_tick = current_slice + row_offsets[sub_step];\
+            \
+            if (physical_tick < 0) \{\
+                physical_tick += TOTAL_STEPS;\
+            \} else if (physical_tick >= TOTAL_STEPS) \{\
+                physical_tick -= TOTAL_STEPS;\
+            \}\
+            \
+            int physical_row = (ROWS - 1) - ((physical_tick / 6) % ROWS);\
+            \
+            uint8_t d1 = pov_buffer[sub_step][physical_row][0];\
+            uint8_t d2 = pov_buffer[sub_step][physical_row][1];\
+            uint8_t d3 = pov_buffer[sub_step][physical_row][2];\
+            \
+            uint8_t cmd = 0x11 + sub_step;\
+            \
+            SPI_Transmit_LED(d1, d2, d3, cmd);\
+        \}\
+        \
+        current_slice++;\
+        if(current_slice >= TOTAL_STEPS)\{\
+            current_slice = 0;\
+        \}\
+        \
+        tim2_uart_divider++;\
+        if (tim2_uart_divider >= 20000)\{ \
+            tim2_uart_divider = 0;\
+            if(!uart_is_transmitting)\{\
+                uart_is_transmitting = 1;\
+                sprintf(uart_tx_buffer, "RPM: %u\\r\\n", motor_rpm);\
+                uart_tx_length = strlen(uart_tx_buffer);\
+                uart_tx_index = 0;\
+                LL_USART_EnableIT_TXE(USART2);\
+            \}\
+        \}\
+    \}\
+\}\
+\
+\
+\
+int main(void) \{\
+    SystemClock_Config();\
+    SPI_Setup();\
+    Strobe_Setup();\
+    // ... restliches Setup ...\
+    \
+    // 1. Buffer leer machen und formatieren\
+    Init_POV_Buffer();\
+    \
+    // 2. Ein Bild malen (Beispiel: Eine wei\'dfe Linie auf H\'f6he 170)\
+    for(int col = 0; col < 36; col++)\{\
+        Set_Pixel(col, 170, 'W'); // 'W' schaltet R, G und B gleichzeitig ein!\
+    \}\
+    \
+    // Beispiel 2: Ein roter Punkt bei Spalte 5, Zeile 0\
+    Set_Pixel(5, 0, 'R');\
+    \
+    while(1) \{\
+       // Hier kannst du das Postfach (pending UART commands) leeren, \
+       // falls du die UART Queue aus der vorherigen Antwort nutzt!\
+    \}\
+\}}
